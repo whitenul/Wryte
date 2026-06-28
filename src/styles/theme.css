@@ -1,0 +1,114 @@
+/* --- 主题变量 --- */
+:root {
+  --bg-primary: #fcfcfd;
+  --bg-secondary: #f3f5f9;
+  --bg-toolbar: #ffffff;
+  --surface-2: #f3f5f9;
+  --text-primary: #1a1d26;
+  --text-secondary: #5b6470;
+  --border-color: #e5e9f0;
+  --accent: #0066ff;
+  --accent-hover: #0052d9;
+  --accent-soft: #d6e4ff;
+  --radius: 10px;
+  --shadow: rgba(20, 23, 40, 0.06);
+  --cursor-color: #1a1d26;
+  --code-keyword: #0066ff;
+  --code-string: #0d9488;
+  --code-number: #ca8a04;
+  --code-variable: #0284c7;
+  --code-title: #0052d9;
+  --code-comment: #5b6470;
+  --highlight-bg: #fef08a;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Courier New", monospace;
+  --font-serif: "Cambria Math", "Times New Roman", serif;
+}
+
+[data-theme="dark"] {
+  --bg-primary: #14161f;
+  --bg-secondary: #1c2030;
+  --bg-toolbar: #181b28;
+  --surface-2: #1c2030;
+  --text-primary: #e6e8ef;
+  --text-secondary: #9aa3b8;
+  --border-color: #282d42;
+  --accent: #4c8dff;
+  --accent-hover: #6ba0ff;
+  --accent-soft: #233656;
+  --radius: 10px;
+  --shadow: rgba(0, 0, 0, 0.35);
+  --cursor-color: #ffffff;
+  --code-keyword: #4c8dff;
+  --code-string: #2dd4bf;
+  --code-number: #fbbf24;
+  --code-variable: #38bdf8;
+  --code-title: #6ba0ff;
+  --code-comment: #9aa3b8;
+  --highlight-bg: #6b5d1a;
+}
+
+/* --- 全局重置 --- */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* --- 按钮基础样式 --- */
+button {
+  cursor: pointer;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  font-size: 13px;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- 全局滚动条（跟随主题） --- */
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* --- 全局文字选中 --- */
+::selection { background: var(--accent-soft); }
+::-moz-selection { background: var(--accent-soft); }
+
+/* --- 焦点样式 --- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- 减少动画偏好 --- */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

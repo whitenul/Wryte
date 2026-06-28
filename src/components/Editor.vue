@@ -1,0 +1,639 @@
+<script setup lang="ts">
+import { ref, onMounted, watch, onUnmounted, nextTick } from 'vue'
+import { EditorState, Compartment } from '@codemirror/state'
+import { EditorView, keymap, lineNumbers } from '@codemirror/view'
+import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import 'katex/dist/katex.min.css'
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown'
+import { search, searchKeymap, gotoLine } from '@codemirror/search'
+import { invoke } from '@tauri-apps/api/core'
+import { useFileStore } from '../stores/file'
+import { useEditorStore } from '../stores/editor'
+import { useThemeStore } from '../stores/theme'
+import { setEditorView } from '../composables/useFormat'
+import { livePreview } from '../composables/useLivePreview'
+import { showToast } from '../composables/useToast'
+import { InlineMath, BlockMath, FootnoteRef, FootnoteDef, Highlight } from '../composables/useMarkdownExt'
+import FormatBar from './FormatBar.vue'
+
+const fileStore = useFileStore()
+const editorStore = useEditorStore()
+const themeStore = useThemeStore()
+const container = ref<HTMLElement>()
+let view: EditorView | null = null
+
+// 动态切换 live preview 扩展，无需重建编辑器
+const livePreviewCompartment = new Compartment()
+
+// 行号显示动态切换
+const lineNumbersCompartment = new Compartment()
+
+// 光标颜色随主题动态切换，CSS 变量方案在 CM6 中优先级不足，改用 Compartment 硬编码
+const cursorCompartment = new Compartment()
+function cursorTheme() {
+  const color = themeStore.theme === 'dark' ? '#ffffff' : '#2d2a26'
+  return EditorView.theme({
+    '.cm-cursor': { borderLeft: `1.2px solid ${color} !important` },
+  })
+}
+
+// CSS 变量驱动主题，明暗切换自动跟随，无需重建编辑器
+const cmTheme = EditorView.theme({
+  '&': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' },
+  '.cm-gutters': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)', border: 'none' },
+  '.cm-activeLine': { backgroundColor: 'var(--surface-2)' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--surface-2)' },
+  '.cm-selectionBackground': { backgroundColor: 'var(--accent-soft) !important' },
+  '&.cm-focused .cm-selectionBackground': { backgroundColor: 'var(--accent-soft) !important' },
+  '.cm-panels': { backgroundColor: 'var(--bg-secondary)', color: 'var(--text-primary)' },
+  '.cm-panels input': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)' },
+  '.cm-searchMatch': { backgroundColor: 'var(--accent-soft)' },
+  '.cm-searchMatch-selected': { backgroundColor: 'var(--accent) !important', color: '#fff' },
+})
+
+// 配对符自动补全：输入开括号自动补全闭括号，输入闭括号时若已有则跳过
+function insertBracket(open: string, close: string) {
+  return (view: EditorView): boolean => {
+    const { from, to } = view.state.selection.main
+    if (from === to) {
+      view.dispatch({
+        changes: { from, to, insert: open + close },
+        selection: { anchor: from + 1 },
+      })
+    } else {
+      const selected = view.state.sliceDoc(from, to)
+      view.dispatch({
+        changes: { from, to, insert: open + selected + close },
+        selection: { anchor: from + 1, head: from + 1 + selected.length },
+      })
+    }
+    return true
+  }
+}
+function skipBracket(close: string) {
+  return (view: EditorView): boolean => {
+    const { head } = view.state.selection.main
+    if (view.state.sliceDoc(head, head + 1) === close) {
+      view.dispatch({ selection: { anchor: head + 1 } })
+      return true
+    }
+    return false
+  }
+}
+const bracketKeymap = keymap.of([
+  { key: '(', run: insertBracket('(', ')') },
+  { key: '[', run: insertBracket('[', ']') },
+  { key: '{', run: insertBracket('{', '}') },
+  { key: ')', run: skipBracket(')') },
+  { key: ']', run: skipBracket(']') },
+  { key: '}', run: skipBracket('}') },
+])
+
+function createView() {
+  if (!container.value) return
+  view = new EditorView({
+    state: EditorState.create({
+      doc: fileStore.content,
+      extensions: [
+        history(),
+        bracketKeymap,
+        keymap.of([{ key: 'Mod-g', run: gotoLine }, ...defaultKeymap, ...historyKeymap, ...searchKeymap]),
+        search(),
+        markdown({ base: markdownLanguage, extensions: [InlineMath, BlockMath, FootnoteRef, FootnoteDef, Highlight] }),
+        cmTheme,
+        cursorCompartment.of(cursorTheme()),
+        lineNumbersCompartment.of(editorStore.showLineNumbers ? lineNumbers() : []),
+        EditorView.lineWrapping,
+        livePreviewCompartment.of(editorStore.mode === 'normal' ? livePreview() : []),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) {
+            fileStore.setContent(update.state.doc.toString())
+          }
+        }),
+      ],
+    }),
+    parent: container.value,
+  })
+  setEditorView(view)
+}
+
+// scroll spy：滚动时更新 TOC active 项
+let scrollRaf = 0
+function handleScroll() {
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0
+    if (!view) return
+    const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop)
+    const lineNum = view.state.doc.lineAt(block.from).number
+    const line0 = lineNum - 1
+    let active: { id: string } | null = null
+    for (const item of editorStore.toc) {
+      if (item.line <= line0) active = item
+      else break
+    }
+    editorStore.setActiveTocId(active?.id ?? null)
+  })
+}
+
+// 粘贴图片：剪贴板图片保存到 md 同目录并插入图片语法
+async function handlePaste(e: ClipboardEvent) {
+  if (!view || !fileStore.path) return
+  const items = e.clipboardData?.items
+  if (!items) return
+  for (const item of items) {
+    if (!item.type.startsWith('image/')) continue
+    e.preventDefault()
+    const blob = item.getAsFile()
+    if (!blob) continue
+    const buffer = await blob.arrayBuffer()
+    const ext = blob.type.split('/')[1]?.split('+')[0] || 'png'
+    const fileName = `image-${Date.now()}.${ext}`
+    const dir = fileStore.path.replace(/[\\/][^\\/]+$/, '')
+    const fullPath = `${dir}/${fileName}`
+    try {
+      await invoke('save_image', { path: fullPath, data: Array.from(new Uint8Array(buffer)) })
+      const insert = `![](./${fileName})`
+      const { head } = view.state.selection.main
+      view.dispatch({
+        changes: { from: head, to: head, insert },
+        selection: { anchor: head + insert.length },
+      })
+      showToast('图片已插入')
+    } catch {
+      showToast('图片保存失败', 'error')
+    }
+    return
+  }
+}
+
+onMounted(() => {
+  createView()
+  // DOM 布局完成后强制刷新一次 decorations，避免初始渲染时语法树/viewport 未就绪导致 widget 不显示
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      if (view) view.dispatch({})
+    })
+  })
+  view?.scrollDOM.addEventListener('scroll', handleScroll)
+  container.value?.addEventListener('paste', handlePaste, true)
+})
+
+onUnmounted(() => {
+  view?.scrollDOM.removeEventListener('scroll', handleScroll)
+  container.value?.removeEventListener('paste', handlePaste, true)
+  view?.destroy()
+  setEditorView(null)
+})
+
+// 外部内容变化时同步（如打开新文件）
+watch(() => fileStore.content, (newContent) => {
+  if (view && view.state.doc.toString() !== newContent) {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: newContent },
+    })
+  }
+  if (fileStore.isLoading) {
+    fileStore.setLoadingComplete()
+  }
+})
+
+// 模式切换时重新配置 live preview 扩展
+watch(() => editorStore.mode, (mode) => {
+  if (!view) return
+  view.dispatch({
+    effects: livePreviewCompartment.reconfigure(mode === 'normal' ? livePreview() : []),
+  })
+})
+
+// 行号显示切换
+watch(() => editorStore.showLineNumbers, (show) => {
+  if (!view) return
+  view.dispatch({
+    effects: lineNumbersCompartment.reconfigure(show ? lineNumbers() : []),
+  })
+})
+
+// 主题切换时重新配置 cursor 颜色
+watch(() => themeStore.theme, () => {
+  if (!view) return
+  view.dispatch({
+    effects: cursorCompartment.reconfigure(cursorTheme()),
+  })
+})
+
+// 滚动到指定行（0-based），供 TocSidebar 跳转调用
+function scrollToLine(line: number) {
+  if (!view) return
+  const linePos = view.state.doc.line(line + 1).from
+  view.dispatch({
+    effects: EditorView.scrollIntoView(linePos, { y: 'start' }),
+  })
+  view.focus()
+}
+
+defineExpose({ scrollToLine })
+</script>
+
+<template>
+  <div class="editor-wrap">
+    <FormatBar />
+    <div class="editor-container" ref="container"></div>
+  </div>
+</template>
+
+<style scoped>
+.editor-wrap {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-container {
+  flex: 1;
+  overflow: auto;
+  background: var(--bg-primary);
+}
+
+.editor-container :deep(.cm-editor) {
+  height: 100%;
+}
+
+/* 隐藏 CM6 的 .cm-cursor div，改用原生 caret，颜色由 caret-color 控制 */
+.editor-container :deep(.cm-cursor) {
+  display: none !important;
+}
+
+.editor-container :deep(.cm-content) {
+  caret-color: var(--cursor-color) !important;
+  padding: 24px 32px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.editor-container :deep(.cm-scroller) {
+  font-family: var(--font-sans);
+  font-size: var(--editor-font-size, 15px);
+  line-height: 1.75;
+}
+
+/* --- live preview 渲染样式 --- */
+.editor-container :deep(.cm-h1) {
+  font-size: 1.75em;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 1em 0 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-color);
+}
+.editor-container :deep(.cm-h2) {
+  font-size: 1.45em;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 1em 0 0.5em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-color);
+}
+.editor-container :deep(.cm-h3) {
+  font-size: 1.25em;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0.8em 0 0.4em;
+}
+.editor-container :deep(.cm-h4) {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+.editor-container :deep(.cm-h5) {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+}
+.editor-container :deep(.cm-h6) {
+  font-size: 0.9em;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0.8em 0 0.4em;
+}
+
+.editor-container :deep(.cm-strong) { font-weight: 700; }
+.editor-container :deep(.cm-em) { font-style: italic; }
+
+.editor-container :deep(.cm-code) {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  font-size: 0.88em;
+}
+
+.editor-container :deep(.cm-codeblock) {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-secondary);
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.editor-container :deep(.cm-blockquote) {
+  border-left: 4px solid var(--accent);
+  padding-left: 16px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.editor-container :deep(.cm-link) {
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+.editor-container :deep(.cm-url) {
+  color: var(--text-secondary);
+  font-size: 0.85em;
+}
+
+.editor-container :deep(.cm-hr-wrapper) {
+  display: inline-block;
+  padding: 16px 0;
+  width: 100%;
+  vertical-align: top;
+}
+.editor-container :deep(.cm-hr) {
+  border: none;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-color), transparent);
+  margin: 0;
+}
+
+/* --- 行内数学公式 --- */
+.editor-container :deep(.cm-inline-math) {
+  font-family: var(--font-serif);
+  font-style: italic;
+}
+
+/* --- 块级数学公式 --- */
+.editor-container :deep(.cm-block-math) {
+  text-align: center;
+  overflow-x: auto;
+  padding: 20px 0;
+}
+
+/* --- 脚注引用 --- */
+.editor-container :deep(.cm-footnote-ref) {
+  color: var(--accent);
+  font-size: 0.85em;
+  vertical-align: super;
+}
+
+/* --- 空 block widget（脚注定义占位）--- */
+.editor-container :deep(.cm-null-block) {
+  height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* --- 列表标记（项目符号 / 序号）--- */
+.editor-container :deep(.cm-list-mark) {
+  display: inline-block;
+  width: 1.4em;
+  margin-left: -1.4em;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* --- 删除线 --- */
+.editor-container :deep(.cm-strikethrough) {
+  text-decoration: line-through;
+  color: var(--text-secondary);
+}
+
+/* --- 任务列表 checkbox --- */
+.editor-container :deep(.cm-task-mark) {
+  display: inline-block;
+  width: 1.4em;
+  margin-left: -1.4em;
+  text-align: center;
+  vertical-align: middle;
+}
+.editor-container :deep(.cm-task-mark input[type="checkbox"]) {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  cursor: pointer;
+  vertical-align: middle;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+}
+.editor-container :deep(.cm-task-mark input[type="checkbox"]:hover) {
+  border-color: var(--accent);
+}
+.editor-container :deep(.cm-task-mark input[type="checkbox"]:checked) {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.editor-container :deep(.cm-task-mark input[type="checkbox"]:checked::after) {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+/* --- 下标和上标 --- */
+.editor-container :deep(.cm-sub) {
+  font-size: 0.75em;
+  vertical-align: sub;
+  line-height: 0;
+}
+.editor-container :deep(.cm-sup) {
+  font-size: 0.75em;
+  vertical-align: super;
+  line-height: 0;
+}
+
+/* --- HTML 行内标签 --- */
+.editor-container :deep(.cm-html-u) { text-decoration: underline; }
+.editor-container :deep(.cm-html-mark) { background: #fef08a; padding: 0 2px; border-radius: 2px; }
+.editor-container :deep(.cm-html-kbd) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* --- 表格 --- */
+.editor-container :deep(.cm-table-wrapper) {
+  padding: 12px 0;
+}
+.editor-container :deep(.cm-table) {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.95em;
+}
+.editor-container :deep(.cm-table th),
+.editor-container :deep(.cm-table td) {
+  border: 1px solid var(--border-color);
+  padding: 6px 12px;
+  text-align: left;
+  caret-color: var(--cursor-color);
+  outline: none;
+}
+.editor-container :deep(.cm-table th:focus),
+.editor-container :deep(.cm-table td:focus) {
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.editor-container :deep(.cm-table .cm-table-header th) {
+  background: var(--bg-secondary);
+  font-weight: 600;
+}
+.editor-container :deep(.cm-table .cm-table-alt) {
+  background: var(--surface-2);
+}
+
+/* --- 图片 --- */
+.editor-container :deep(.cm-img-wrapper) {
+  display: inline-block;
+  padding: 8px 0;
+  vertical-align: top;
+}
+.editor-container :deep(.cm-img) {
+  max-width: 100%;
+  display: block;
+  margin: 0;
+  border-radius: var(--radius);
+}
+
+/* --- 代码块 widget（highlight.js）--- */
+.editor-container :deep(.cm-codeblock-wrapper) {
+  padding: 12px 0;
+}
+.editor-container :deep(.cm-codeblock-widget) {
+  background: var(--bg-secondary);
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  line-height: 1.6;
+}
+.editor-container :deep(.cm-codeblock-widget code) {
+  background: none;
+  padding: 0;
+}
+.editor-container :deep(.cm-codeblock-widget .hljs) { color: var(--text-primary); }
+.editor-container :deep(.cm-codeblock-widget .hljs-comment) { color: var(--code-comment); font-style: italic; }
+.editor-container :deep(.cm-codeblock-widget .hljs-quote) { color: var(--code-comment); font-style: italic; }
+.editor-container :deep(.cm-codeblock-widget .hljs-keyword) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-selector-tag) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-type) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-string) { color: var(--code-string); }
+.editor-container :deep(.cm-codeblock-widget .hljs-attr) { color: var(--code-string); }
+.editor-container :deep(.cm-codeblock-widget .hljs-template-tag) { color: var(--code-string); }
+.editor-container :deep(.cm-codeblock-widget .hljs-number) { color: var(--code-number); }
+.editor-container :deep(.cm-codeblock-widget .hljs-literal) { color: var(--code-number); }
+.editor-container :deep(.cm-codeblock-widget .hljs-variable) { color: var(--code-variable); }
+.editor-container :deep(.cm-codeblock-widget .hljs-title) { color: var(--code-title); font-weight: 600; }
+.editor-container :deep(.cm-codeblock-widget .hljs-section) { color: var(--code-title); font-weight: 600; }
+.editor-container :deep(.cm-codeblock-widget .hljs-built_in) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-name) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-tag) { color: var(--code-keyword); }
+.editor-container :deep(.cm-codeblock-widget .hljs-attribute) { color: var(--code-title); }
+.editor-container :deep(.cm-codeblock-widget .hljs-meta) { color: var(--code-comment); }
+
+/* --- 高亮 ==text== --- */
+.editor-container :deep(.cm-highlight) {
+  background: var(--highlight-bg, #fef08a);
+  padding: 0.1em 0.25em;
+  border-radius: 3px;
+}
+
+/* --- GFM 警告框 callout --- */
+.editor-container :deep(.cm-callout) {
+  padding: 4px 12px;
+  font-style: normal;
+}
+.editor-container :deep(.cm-callout-first) {
+  border-radius: 0 6px 0 0;
+}
+.editor-container :deep(.cm-callout-last) {
+  border-radius: 0 0 6px 0;
+}
+.editor-container :deep(.cm-callout-first.cm-callout-last) {
+  border-radius: 0 6px 6px 0;
+}
+.editor-container :deep(.cm-callout-note) {
+  border-left-color: #0066ff;
+  background: rgba(0, 102, 255, 0.06);
+}
+.editor-container :deep(.cm-callout-tip) {
+  border-left-color: #0d9488;
+  background: rgba(13, 148, 136, 0.06);
+}
+.editor-container :deep(.cm-callout-important) {
+  border-left-color: #7c3aed;
+  background: rgba(124, 58, 237, 0.06);
+}
+.editor-container :deep(.cm-callout-warning) {
+  border-left-color: #ca8a04;
+  background: rgba(202, 138, 4, 0.06);
+}
+.editor-container :deep(.cm-callout-caution) {
+  border-left-color: #dc2626;
+  background: rgba(220, 38, 38, 0.06);
+}
+
+/* --- mermaid 图表 --- */
+.editor-container :deep(.cm-mermaid-wrapper) {
+  padding: 16px 0;
+  text-align: center;
+  overflow-x: auto;
+}
+.editor-container :deep(.cm-mermaid-wrapper svg) {
+  max-width: 100%;
+  height: auto;
+}
+
+/* block widget 在引用内时，自身模拟引用边框和缩进（widget 替换整行后 line decoration 不显示） */
+.editor-container :deep(.cm-widget-in-quote) {
+  border-left: 4px solid var(--accent);
+  padding-left: 16px;
+}
+.editor-container :deep(.cm-widget-in-callout) {
+  border-radius: 0 6px 6px 0;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.editor-container :deep(.cm-widget-in-callout-note) {
+  border-left-color: #0066ff;
+  background: rgba(0, 102, 255, 0.06);
+}
+.editor-container :deep(.cm-widget-in-callout-tip) {
+  border-left-color: #0d9488;
+  background: rgba(13, 148, 136, 0.06);
+}
+.editor-container :deep(.cm-widget-in-callout-important) {
+  border-left-color: #7c3aed;
+  background: rgba(124, 58, 237, 0.06);
+}
+.editor-container :deep(.cm-widget-in-callout-warning) {
+  border-left-color: #ca8a04;
+  background: rgba(202, 138, 4, 0.06);
+}
+.editor-container :deep(.cm-widget-in-callout-caution) {
+  border-left-color: #dc2626;
+  background: rgba(220, 38, 38, 0.06);
+}
+</style>
