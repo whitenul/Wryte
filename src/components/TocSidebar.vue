@@ -37,6 +37,8 @@ const visibleToc = computed<VisibleEntry[]>(() => {
 })
 
 function jump(item: TocItem) {
+  // 跳转时临时禁用scroll spy的activeId更新，避免样式变化干扰后续点击
+  editorStore.setActiveTocId(item.id)
   window.dispatchEvent(new CustomEvent('toc-jump', { detail: item.line }))
 }
 </script>
@@ -101,6 +103,7 @@ function jump(item: TocItem) {
 }
 
 .toc-item {
+  position: relative;
   display: flex;
   align-items: center;
   margin: 0 4px;
@@ -118,11 +121,11 @@ function jump(item: TocItem) {
 }
 
 .toc-toggle {
-  flex-shrink: 0;
-  width: 20px;
+  position: absolute;
+  left: 4px;
+  width: 16px;
   height: 20px;
   padding: 0;
-  margin-left: 4px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -154,12 +157,12 @@ function jump(item: TocItem) {
   font-weight: 500;
 }
 
-.toc-level-1 .toc-link { padding-left: 4px; }
-.toc-level-2 .toc-link { padding-left: 20px; }
-.toc-level-3 .toc-link { padding-left: 36px; }
-.toc-level-4 .toc-link { padding-left: 52px; }
-.toc-level-5 .toc-link { padding-left: 68px; }
-.toc-level-6 .toc-link { padding-left: 84px; }
+.toc-level-1 .toc-link { padding-left: 20px; }
+.toc-level-2 .toc-link { padding-left: 36px; }
+.toc-level-3 .toc-link { padding-left: 52px; }
+.toc-level-4 .toc-link { padding-left: 68px; }
+.toc-level-5 .toc-link { padding-left: 84px; }
+.toc-level-6 .toc-link { padding-left: 100px; }
 
 .toc-slide-enter-active,
 .toc-slide-leave-active {

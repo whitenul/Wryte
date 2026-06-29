@@ -64,26 +64,76 @@ const cmTheme = EditorView.theme({
   '.cm-cursor': { display: 'none !important' },
 })
 
-// 配对符自动补全：输入开括号自动补全闭括号，输入闭括号时若已有则跳过
-function insertBracket(open: string, close: string) {
+// 词内字符：字母、数字、下划线、中文
+const WORD_CHAR_RE = /[\w\u4e00-\u9fa5]/
+const isWordChar = (c: string): boolean => c.length === 1 && WORD_CHAR_RE.test(c)
+
+// 通用配对符自动补全
+// 无选区：插入 open + close，光标居中
+// 有选区：在选区两端包裹 open / close，选区保留
+// 已有紧邻的闭符号则跳过（直接移动光标），避免重复插入
+// skipInWord：前一个字符是词内字符则跳过（用于 */_/~ 智能补全）
+// onlyAtBoundary：前后任一是词内字符都跳过（用于引号等更保守场景）
+function insertPair(open: string, close: string, opts?: { skipInWord?: boolean; onlyAtBoundary?: boolean }) {
   return (view: EditorView): boolean => {
     const { from, to } = view.state.selection.main
     if (from === to) {
+      const prev = from > 0 ? view.state.sliceDoc(from - 1, from) : ''
+      const next = view.state.sliceDoc(to, to + 1)
+      if (opts?.skipInWord && isWordChar(prev)) return false
+      if (opts?.onlyAtBoundary && (isWordChar(prev) || isWordChar(next))) return false
+    }
+    if (from === to && view.state.sliceDoc(to, to + close.length) === close) {
+      view.dispatch({ selection: { anchor: to + close.length } })
+      return true
+    }
+    if (from === to) {
       view.dispatch({
         changes: { from, to, insert: open + close },
-        selection: { anchor: from + 1 },
+        selection: { anchor: from + open.length },
       })
     } else {
       const selected = view.state.sliceDoc(from, to)
       view.dispatch({
         changes: { from, to, insert: open + selected + close },
-        selection: { anchor: from + 1, head: from + 1 + selected.length },
+        selection: { anchor: from + open.length, head: from + open.length + selected.length },
       })
     }
     return true
   }
 }
-function skipBracket(close: string) {
+
+// Markdown 强调符号智能补全（*/_/~）
+// - 词内不补全（避免破坏单词）
+// - 紧邻后一个 open 字符则跳过
+// - 双侧都有 open：插入 open+open（变成 ****）
+// - 单侧有 open：插入单个 open（合并成对）
+// - 默认：插入成对，光标居中
+function mdEmphasis(open: string) {
+  return (view: EditorView): boolean => {
+    const { from, to } = view.state.selection.main
+    if (from !== to) return false
+    const prev = from > 0 ? view.state.sliceDoc(from - 1, from) : ''
+    const next = view.state.sliceDoc(to, to + 1)
+    if (WORD_CHAR_RE.test(prev)) return false
+    if (next === open) {
+      view.dispatch({ selection: { anchor: to + 1 } })
+      return true
+    }
+    let insert: string
+    if (prev === open && next === open) insert = open + open
+    else if (prev === open || next === open) insert = open
+    else insert = open + open
+    view.dispatch({
+      changes: { from, to, insert },
+      selection: { anchor: from + 1 },
+    })
+    return true
+  }
+}
+
+// 跳过一次光标紧邻的闭符号
+function skipClose(close: string) {
   return (view: EditorView): boolean => {
     const { head } = view.state.selection.main
     if (view.state.sliceDoc(head, head + 1) === close) {
@@ -93,13 +143,24 @@ function skipBracket(close: string) {
     return false
   }
 }
+
 const bracketKeymap = keymap.of([
-  { key: '(', run: insertBracket('(', ')') },
-  { key: '[', run: insertBracket('[', ']') },
-  { key: '{', run: insertBracket('{', '}') },
-  { key: ')', run: skipBracket(')') },
-  { key: ']', run: skipBracket(']') },
-  { key: '}', run: skipBracket('}') },
+  // 括号类
+  { key: '(', run: insertPair('(', ')') },
+  { key: '[', run: insertPair('[', ']') },
+  { key: '{', run: insertPair('{', '}') },
+  { key: ')', run: skipClose(')') },
+  { key: ']', run: skipClose(']') },
+  { key: '}', run: skipClose('}') },
+  // Markdown 强调（*/_/~ 智能配对）
+  { key: '*', run: mdEmphasis('*') },
+  { key: '_', run: mdEmphasis('_') },
+  { key: '~', run: mdEmphasis('~') },
+  // 行内代码 `` ` ``：仅前一个字符是词内字符时跳过（避免破坏单词）
+  { key: '`', run: insertPair('`', '`', { skipInWord: true }) },
+  // 引号：前后任一是词内字符都跳过，避免破坏缩写（don't）和单词开头（"hello）
+  { key: '"', run: insertPair('"', '"', { onlyAtBoundary: true }) },
+  { key: "'", run: insertPair("'", "'", { onlyAtBoundary: true }) },
 ])
 
 function createView() {
@@ -136,11 +197,12 @@ function createView() {
 
 // scroll spy：滚动时更新 TOC active 项
 let scrollRaf = 0
+let scrollSpyDisabled = false
 function handleScroll() {
   if (scrollRaf) return
   scrollRaf = requestAnimationFrame(() => {
     scrollRaf = 0
-    if (!view) return
+    if (!view || scrollSpyDisabled) return
     const block = view.lineBlockAtHeight(view.scrollDOM.scrollTop)
     const lineNum = view.state.doc.lineAt(block.from).number
     const line0 = lineNum - 1
@@ -216,10 +278,20 @@ watch(() => fileStore.content, (newContent) => {
 })
 
 // 模式切换时重新配置 live preview 扩展
+// 切换前后 widget 的增减会让可视行高变化，导致滚动位置漂移，需要保存并恢复
 watch(() => editorStore.mode, (mode) => {
   if (!view) return
+  const scrollTop = view.scrollDOM.scrollTop
+  const anchor = view.state.selection.main.head
   view.dispatch({
     effects: livePreviewCompartment.reconfigure(mode === 'normal' ? livePreview() : []),
+  })
+  // 等下一帧 layout 完成后再恢复滚动位置
+  requestAnimationFrame(() => {
+    if (!view) return
+    view.scrollDOM.scrollTop = scrollTop
+    // 顺手把光标也移回原位，避免被 reconfigure 清掉
+    view.dispatch({ selection: { anchor } })
   })
 })
 
@@ -242,11 +314,17 @@ watch(() => themeStore.theme, () => {
 // 滚动到指定行（0-based），供 TocSidebar 跳转调用
 function scrollToLine(line: number) {
   if (!view) return
-  const linePos = view.state.doc.line(line + 1).from
+  // 跳转时临时禁用scroll spy，避免滚动过程中activeId频繁更新导致样式变化
+  scrollSpyDisabled = true
+  const docLines = view.state.doc.lines
+  const oneBased = Math.max(1, Math.min(line + 1, docLines))
+  const targetLine = view.state.doc.line(oneBased)
   view.dispatch({
-    effects: EditorView.scrollIntoView(linePos, { y: 'start' }),
+    effects: EditorView.scrollIntoView(targetLine.from, { y: 'start' }),
   })
   view.focus()
+  // 300ms后恢复scroll spy
+  setTimeout(() => { scrollSpyDisabled = false }, 300)
 }
 
 defineExpose({ scrollToLine })
@@ -561,14 +639,32 @@ defineExpose({ scrollToLine })
 }
 .editor-container :deep(.cm-codeblock-widget) {
   background: var(--bg-secondary);
-  padding: 18px 20px;
-  border-radius: var(--radius);
+  padding: 16px 18px;
+  border-radius: 0 0 var(--radius) var(--radius);
   overflow-x: auto;
   font-family: Consolas, "Cascadia Code", "SFMono-Regular", "Courier New", monospace;
   font-size: 0.87em;
   font-weight: 600;
   line-height: 1.7;
   border: 1px solid var(--border-color);
+  border-top: none;
+  margin: 0;
+  transition: max-height 0.25s ease;
+}
+/* 折叠状态：仅显示前 10 行，渐隐收尾 */
+.editor-container :deep(.cm-codeblock-widget.cm-codeblock-folded) {
+  max-height: calc(1.7em * 10 + 32px);
+  position: relative;
+}
+.editor-container :deep(.cm-codeblock-widget.cm-codeblock-folded::after) {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--bg-secondary));
+  pointer-events: none;
 }
 .editor-container :deep(.cm-codeblock-widget code) {
   background: none;
@@ -593,6 +689,71 @@ defineExpose({ scrollToLine })
 .editor-container :deep(.cm-codeblock-widget .hljs-tag) { color: var(--code-keyword); }
 .editor-container :deep(.cm-codeblock-widget .hljs-attribute) { color: var(--code-title); }
 .editor-container :deep(.cm-codeblock-widget .hljs-meta) { color: var(--code-comment); }
+
+/* --- Typora 风格代码块头部：始终可见 --- */
+.editor-container :deep(.cm-codeblock-header) {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 0.78em;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.editor-container :deep(.cm-codeblock-wrapper:hover .cm-codeblock-header) {
+  background: var(--surface-2);
+}
+.editor-container :deep(.cm-codeblock-wrapper:focus-within .cm-codeblock-header) {
+  border-color: var(--accent);
+}
+.editor-container :deep(.cm-codeblock-lang-group) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+.editor-container :deep(.cm-codeblock-dot) {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+.editor-container :deep(.cm-codeblock-lang) {
+  text-transform: lowercase;
+}
+.editor-container :deep(.cm-codeblock-actions) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.editor-container :deep(.cm-codeblock-fold),
+.editor-container :deep(.cm-codeblock-copy) {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 0.95em;
+  font-family: inherit;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.editor-container :deep(.cm-codeblock-fold:hover),
+.editor-container :deep(.cm-codeblock-copy:hover) {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
+}
+.editor-container :deep(.cm-codeblock-copy-done) {
+  color: var(--success-color);
+}
 
 /* --- 高亮 ==text== --- */
 .editor-container :deep(.cm-highlight) {
@@ -627,6 +788,25 @@ defineExpose({ scrollToLine })
   outline-offset: 1px;
   cursor: text;
   font-family: var(--font-mono);
+}
+.editor-container :deep(.cm-cell-image) {
+  max-width: 100%;
+  max-height: 80px;
+  vertical-align: middle;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.editor-container :deep(.cm-cell-image-editing) {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  cursor: text;
+  display: inline-block;
+  word-break: break-all;
 }
 
 /* --- GFM 警告框 callout --- */
@@ -665,6 +845,28 @@ defineExpose({ scrollToLine })
   border-left-color: var(--callout-caution-border);
   background: var(--callout-caution-bg);
 }
+.editor-container :deep(.cm-callout-title) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 0.92em;
+  padding: 2px 0 6px;
+  color: var(--text-primary);
+  user-select: none;
+}
+.editor-container :deep(.cm-callout-icon) {
+  font-size: 1.05em;
+  line-height: 1;
+}
+.editor-container :deep(.cm-callout-type) {
+  letter-spacing: 0.02em;
+}
+.editor-container :deep(.cm-callout-title-note) { color: var(--callout-note-border); }
+.editor-container :deep(.cm-callout-title-tip) { color: var(--callout-tip-border); }
+.editor-container :deep(.cm-callout-title-important) { color: var(--callout-important-border); }
+.editor-container :deep(.cm-callout-title-warning) { color: var(--callout-warning-border); }
+.editor-container :deep(.cm-callout-title-caution) { color: var(--callout-caution-border); }
 
 /* --- mermaid 图表 --- */
 .editor-container :deep(.cm-mermaid-wrapper) {
