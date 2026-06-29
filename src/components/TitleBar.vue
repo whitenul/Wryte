@@ -199,13 +199,12 @@ onUnmounted(() => {
   border: none;
   border-radius: 4px;
   color: var(--text-secondary);
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .ctrl-btn:hover {
   background: var(--surface-2);
   color: var(--text-primary);
-  border: none;
 }
 
 .ctrl-btn.close:hover {
@@ -321,7 +320,6 @@ onUnmounted(() => {
 .ctx-item:hover {
   background: var(--accent-soft);
   color: var(--accent);
-  border: none;
 }
 
 .ctx-item.danger:hover {

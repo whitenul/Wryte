@@ -1,28 +1,41 @@
 /* --- 主题变量 --- */
 :root {
-  --bg-primary: #fcfcfd;
-  --bg-secondary: #f3f5f9;
+  --bg-primary: #fbfcfe;
+  --bg-secondary: #f3f8fc;
   --bg-toolbar: #ffffff;
-  --surface-2: #f3f5f9;
-  --text-primary: #1a1d26;
-  --text-secondary: #5b6470;
-  --border-color: #e5e9f0;
-  --accent: #0066ff;
-  --accent-hover: #0052d9;
-  --accent-soft: #d6e4ff;
+  --surface-2: #edf4fa;
+  --text-primary: #162033;
+  --text-secondary: #596880;
+  --border-color: #e1e9f2;
+  --accent: #0078f5;
+  --accent-hover: #005eea;
+  --accent-soft: #d6e9ff;
+  --accent-teal: #12dbb0;
   --radius: 10px;
-  --shadow: rgba(20, 23, 40, 0.06);
-  --cursor-color: #1a1d26;
-  --code-keyword: #0066ff;
-  --code-string: #0d9488;
-  --code-number: #ca8a04;
-  --code-variable: #0284c7;
-  --code-title: #0052d9;
-  --code-comment: #5b6470;
+  --shadow: rgba(10, 40, 80, 0.05);
+  --cursor-color: #162033;
+  --code-keyword: #0078f5;
+  --code-string: #10c99d;
+  --code-number: #e6a700;
+  --code-variable: #00a3c4;
+  --code-title: #005eea;
+  --code-comment: #6b7a92;
   --highlight-bg: #fef08a;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Courier New", monospace;
   --font-serif: "Cambria Math", "Times New Roman", serif;
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.25s ease;
+  --callout-note-border: #0078f5;
+  --callout-note-bg: rgba(0, 120, 245, 0.05);
+  --callout-tip-border: #10c99d;
+  --callout-tip-bg: rgba(16, 201, 157, 0.05);
+  --callout-important-border: #7c3aed;
+  --callout-important-bg: rgba(124, 58, 237, 0.05);
+  --callout-warning-border: #e6a700;
+  --callout-warning-bg: rgba(230, 167, 0, 0.05);
+  --callout-caution-border: #ef4444;
+  --callout-caution-bg: rgba(239, 68, 68, 0.05);
 }
 
 [data-theme="dark"] {
@@ -46,6 +59,16 @@
   --code-title: #6ba0ff;
   --code-comment: #9aa3b8;
   --highlight-bg: #6b5d1a;
+  --callout-note-border: #4c8dff;
+  --callout-note-bg: rgba(76, 141, 255, 0.12);
+  --callout-tip-border: #2dd4bf;
+  --callout-tip-bg: rgba(45, 212, 191, 0.12);
+  --callout-important-border: #a78bfa;
+  --callout-important-bg: rgba(167, 139, 250, 0.12);
+  --callout-warning-border: #fbbf24;
+  --callout-warning-bg: rgba(251, 191, 36, 0.12);
+  --callout-caution-border: #f87171;
+  --callout-caution-bg: rgba(248, 113, 113, 0.12);
 }
 
 /* --- 全局重置 --- */
@@ -72,13 +95,17 @@ button {
   border-radius: var(--radius);
   padding: 6px 12px;
   font-size: 13px;
-  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
 }
 
 button:hover {
   background: var(--accent-soft);
   color: var(--accent);
   border-color: var(--accent);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 button:disabled {

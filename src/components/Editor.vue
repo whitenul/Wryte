@@ -41,6 +41,18 @@ function cursorTheme() {
 const cmTheme = EditorView.theme({
   '&': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' },
   '.cm-gutters': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-secondary)', border: 'none' },
+  '.cm-content': {
+    padding: '56px 64px 120px',
+    caretColor: 'var(--cursor-color)',
+    fontSize: '16px',
+    lineHeight: '1.8',
+    fontFamily: 'var(--font-sans)',
+  },
+  '.cm-scroller': {
+    fontFamily: 'var(--font-sans)',
+    fontSize: '16px',
+    lineHeight: '1.8',
+  },
   '.cm-activeLine': { backgroundColor: 'var(--surface-2)' },
   '.cm-activeLineGutter': { backgroundColor: 'var(--surface-2)' },
   '.cm-selectionBackground': { backgroundColor: 'var(--accent-soft) !important' },
@@ -49,6 +61,7 @@ const cmTheme = EditorView.theme({
   '.cm-panels input': { backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)', border: '1px solid var(--border-color)' },
   '.cm-searchMatch': { backgroundColor: 'var(--accent-soft)' },
   '.cm-searchMatch-selected': { backgroundColor: 'var(--accent) !important', color: '#fff' },
+  '.cm-cursor': { display: 'none !important' },
 })
 
 // 配对符自动补全：输入开括号自动补全闭括号，输入闭括号时若已有则跳过
@@ -104,6 +117,10 @@ function createView() {
         cursorCompartment.of(cursorTheme()),
         lineNumbersCompartment.of(editorStore.showLineNumbers ? lineNumbers() : []),
         EditorView.lineWrapping,
+        EditorView.scrollMargins.of((view) => {
+          const h = view.scrollDOM.clientHeight
+          return { top: Math.min(h * 0.3, 180), bottom: Math.min(h * 0.2, 120), left: 0, right: 0 }
+        }),
         livePreviewCompartment.of(editorStore.mode === 'normal' ? livePreview() : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -238,7 +255,9 @@ defineExpose({ scrollToLine })
 <template>
   <div class="editor-wrap">
     <FormatBar />
-    <div class="editor-container" ref="container"></div>
+    <div class="editor-center">
+      <div class="editor-container" ref="container"></div>
+    </div>
   </div>
 </template>
 
@@ -249,72 +268,72 @@ defineExpose({ scrollToLine })
   flex-direction: column;
 }
 
-.editor-container {
+.editor-center {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
   background: var(--bg-primary);
+}
+
+.editor-container {
+  width: 100%;
+  max-width: 1040px;
+  height: 100%;
 }
 
 .editor-container :deep(.cm-editor) {
   height: 100%;
 }
 
-/* 隐藏 CM6 的 .cm-cursor div，改用原生 caret，颜色由 caret-color 控制 */
-.editor-container :deep(.cm-cursor) {
-  display: none !important;
-}
-
-.editor-container :deep(.cm-content) {
-  caret-color: var(--cursor-color) !important;
-  padding: 24px 32px;
-  max-width: 860px;
-  margin: 0 auto;
-}
-
 .editor-container :deep(.cm-scroller) {
-  font-family: var(--font-sans);
-  font-size: var(--editor-font-size, 15px);
-  line-height: 1.75;
+  overflow: auto;
+}
+
+.editor-container :deep(.cm-line) {
+  padding: 0;
 }
 
 /* --- live preview 渲染样式 --- */
 .editor-container :deep(.cm-h1) {
-  font-size: 1.75em;
-  font-weight: 700;
-  line-height: 1.3;
-  margin: 1em 0 0.5em;
+  font-size: 2em;
+  font-weight: 800;
+  line-height: 1.25;
+  margin: 1.2em 0 0.5em;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 2px solid var(--border-color);
+  letter-spacing: -0.01em;
 }
 .editor-container :deep(.cm-h2) {
-  font-size: 1.45em;
+  font-size: 1.55em;
   font-weight: 700;
   line-height: 1.3;
-  margin: 1em 0 0.5em;
-  padding-bottom: 0.3em;
+  margin: 1.1em 0 0.45em;
+  padding-bottom: 0.25em;
   border-bottom: 1px solid var(--border-color);
+  letter-spacing: -0.005em;
 }
 .editor-container :deep(.cm-h3) {
-  font-size: 1.25em;
-  font-weight: 600;
-  line-height: 1.4;
-  margin: 0.8em 0 0.4em;
+  font-size: 1.28em;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 1em 0 0.4em;
 }
 .editor-container :deep(.cm-h4) {
-  font-size: 1.1em;
+  font-size: 1.12em;
   font-weight: 600;
-  margin: 0.8em 0 0.4em;
+  margin: 0.9em 0 0.35em;
 }
 .editor-container :deep(.cm-h5) {
   font-size: 1em;
   font-weight: 600;
-  margin: 0.8em 0 0.4em;
+  margin: 0.8em 0 0.3em;
 }
 .editor-container :deep(.cm-h6) {
   font-size: 0.9em;
   font-weight: 600;
   color: var(--text-secondary);
-  margin: 0.8em 0 0.4em;
+  margin: 0.8em 0 0.3em;
 }
 
 .editor-container :deep(.cm-strong) { font-weight: 700; }
@@ -323,24 +342,37 @@ defineExpose({ scrollToLine })
 .editor-container :deep(.cm-code) {
   font-family: var(--font-mono);
   background: var(--surface-2);
-  padding: 0.1em 0.4em;
-  border-radius: 4px;
-  font-size: 0.88em;
+  padding: 0.15em 0.45em;
+  border-radius: 5px;
+  font-size: 0.87em;
 }
 
 .editor-container :deep(.cm-codeblock) {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-family: Consolas, "Cascadia Code", "SFMono-Regular", "Courier New", monospace;
+  font-size: 0.87em;
+  font-weight: 600;
   background: var(--bg-secondary);
-  padding-left: 16px;
-  padding-right: 16px;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .editor-container :deep(.cm-blockquote) {
   border-left: 4px solid var(--accent);
-  padding-left: 16px;
+  padding: 0 16px 0 20px;
   color: var(--text-secondary);
-  font-style: italic;
+  font-style: normal;
+  background: var(--callout-note-bg);
+}
+.editor-container :deep(.cm-blockquote-first) {
+  padding-top: 12px;
+  border-radius: 0 8px 0 0;
+}
+.editor-container :deep(.cm-blockquote-last) {
+  padding-bottom: 12px;
+  border-radius: 0 0 8px 0;
+}
+.editor-container :deep(.cm-blockquote-first.cm-blockquote-last) {
+  border-radius: 0 8px 8px 0;
 }
 
 .editor-container :deep(.cm-link) {
@@ -355,7 +387,7 @@ defineExpose({ scrollToLine })
 
 .editor-container :deep(.cm-hr-wrapper) {
   display: inline-block;
-  padding: 16px 0;
+  padding: 24px 0;
   width: 100%;
   vertical-align: top;
 }
@@ -463,7 +495,7 @@ defineExpose({ scrollToLine })
 
 /* --- HTML 行内标签 --- */
 .editor-container :deep(.cm-html-u) { text-decoration: underline; }
-.editor-container :deep(.cm-html-mark) { background: #fef08a; padding: 0 2px; border-radius: 2px; }
+.editor-container :deep(.cm-html-mark) { background: var(--highlight-bg); padding: 0 2px; border-radius: 2px; }
 .editor-container :deep(.cm-html-kbd) {
   font-family: var(--font-mono);
   font-size: 0.85em;
@@ -475,17 +507,21 @@ defineExpose({ scrollToLine })
 
 /* --- 表格 --- */
 .editor-container :deep(.cm-table-wrapper) {
-  padding: 12px 0;
+  padding: 24px 0;
+  margin: 0;
 }
 .editor-container :deep(.cm-table) {
   border-collapse: collapse;
   width: 100%;
   font-size: 0.95em;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
 }
 .editor-container :deep(.cm-table th),
 .editor-container :deep(.cm-table td) {
   border: 1px solid var(--border-color);
-  padding: 6px 12px;
+  padding: 8px 14px;
   text-align: left;
   caret-color: var(--cursor-color);
   outline: none;
@@ -506,7 +542,8 @@ defineExpose({ scrollToLine })
 /* --- 图片 --- */
 .editor-container :deep(.cm-img-wrapper) {
   display: inline-block;
-  padding: 8px 0;
+  padding: 24px 0;
+  margin: 0;
   vertical-align: top;
 }
 .editor-container :deep(.cm-img) {
@@ -514,20 +551,24 @@ defineExpose({ scrollToLine })
   display: block;
   margin: 0;
   border-radius: var(--radius);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
 }
 
 /* --- 代码块 widget（highlight.js）--- */
 .editor-container :deep(.cm-codeblock-wrapper) {
-  padding: 12px 0;
+  padding: 24px 0;
+  margin: 0;
 }
 .editor-container :deep(.cm-codeblock-widget) {
   background: var(--bg-secondary);
-  padding: 14px 16px;
+  padding: 18px 20px;
   border-radius: var(--radius);
   overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  line-height: 1.6;
+  font-family: Consolas, "Cascadia Code", "SFMono-Regular", "Courier New", monospace;
+  font-size: 0.87em;
+  font-weight: 600;
+  line-height: 1.7;
+  border: 1px solid var(--border-color);
 }
 .editor-container :deep(.cm-codeblock-widget code) {
   background: none;
@@ -560,39 +601,69 @@ defineExpose({ scrollToLine })
   border-radius: 3px;
 }
 
+/* --- 表格内数学公式 --- */
+.editor-container :deep(.cm-cell-math) {
+  display: inline-block;
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 2px;
+  transition: background 0.15s;
+}
+.editor-container :deep(.cm-cell-math:hover) {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+}
+.editor-container :deep(.cm-cell-math-editing) {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+  cursor: text;
+}
+.editor-container :deep(.cm-cell-mark-editing) {
+  font-style: normal !important;
+  font-weight: normal !important;
+  text-decoration: none !important;
+  background: var(--bg-hover, rgba(0, 0, 0, 0.05));
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+  cursor: text;
+  font-family: var(--font-mono);
+}
+
 /* --- GFM 警告框 callout --- */
 .editor-container :deep(.cm-callout) {
-  padding: 4px 12px;
+  padding: 0 16px 0 20px;
   font-style: normal;
 }
 .editor-container :deep(.cm-callout-first) {
-  border-radius: 0 6px 0 0;
+  padding-top: 14px;
+  border-radius: 0 8px 0 0;
 }
 .editor-container :deep(.cm-callout-last) {
-  border-radius: 0 0 6px 0;
+  padding-bottom: 14px;
+  border-radius: 0 0 8px 0;
 }
 .editor-container :deep(.cm-callout-first.cm-callout-last) {
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 8px 8px 0;
 }
 .editor-container :deep(.cm-callout-note) {
-  border-left-color: #0066ff;
-  background: rgba(0, 102, 255, 0.06);
+  border-left-color: var(--callout-note-border);
+  background: var(--callout-note-bg);
 }
 .editor-container :deep(.cm-callout-tip) {
-  border-left-color: #0d9488;
-  background: rgba(13, 148, 136, 0.06);
+  border-left-color: var(--callout-tip-border);
+  background: var(--callout-tip-bg);
 }
 .editor-container :deep(.cm-callout-important) {
-  border-left-color: #7c3aed;
-  background: rgba(124, 58, 237, 0.06);
+  border-left-color: var(--callout-important-border);
+  background: var(--callout-important-bg);
 }
 .editor-container :deep(.cm-callout-warning) {
-  border-left-color: #ca8a04;
-  background: rgba(202, 138, 4, 0.06);
+  border-left-color: var(--callout-warning-border);
+  background: var(--callout-warning-bg);
 }
 .editor-container :deep(.cm-callout-caution) {
-  border-left-color: #dc2626;
-  background: rgba(220, 38, 38, 0.06);
+  border-left-color: var(--callout-caution-border);
+  background: var(--callout-caution-bg);
 }
 
 /* --- mermaid 图表 --- */
@@ -609,31 +680,51 @@ defineExpose({ scrollToLine })
 /* block widget 在引用内时，自身模拟引用边框和缩进（widget 替换整行后 line decoration 不显示） */
 .editor-container :deep(.cm-widget-in-quote) {
   border-left: 4px solid var(--accent);
-  padding-left: 16px;
+  padding-left: 20px;
+  padding-right: 16px;
+  background: var(--callout-note-bg);
 }
 .editor-container :deep(.cm-widget-in-callout) {
-  border-radius: 0 6px 6px 0;
-  padding-left: 12px;
-  padding-right: 12px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 .editor-container :deep(.cm-widget-in-callout-note) {
-  border-left-color: #0066ff;
-  background: rgba(0, 102, 255, 0.06);
+  border-left-color: var(--callout-note-border);
+  background: var(--callout-note-bg);
 }
 .editor-container :deep(.cm-widget-in-callout-tip) {
-  border-left-color: #0d9488;
-  background: rgba(13, 148, 136, 0.06);
+  border-left-color: var(--callout-tip-border);
+  background: var(--callout-tip-bg);
 }
 .editor-container :deep(.cm-widget-in-callout-important) {
-  border-left-color: #7c3aed;
-  background: rgba(124, 58, 237, 0.06);
+  border-left-color: var(--callout-important-border);
+  background: var(--callout-important-bg);
 }
 .editor-container :deep(.cm-widget-in-callout-warning) {
-  border-left-color: #ca8a04;
-  background: rgba(202, 138, 4, 0.06);
+  border-left-color: var(--callout-warning-border);
+  background: var(--callout-warning-bg);
 }
 .editor-container :deep(.cm-widget-in-callout-caution) {
-  border-left-color: #dc2626;
-  background: rgba(220, 38, 38, 0.06);
+  border-left-color: var(--callout-caution-border);
+  background: var(--callout-caution-bg);
+}
+
+/* 引用内 block widget 文字色重置 */
+.editor-container :deep(.cm-blockquote .cm-codeblock-widget),
+.editor-container :deep(.cm-blockquote .cm-table-wrapper),
+.editor-container :deep(.cm-blockquote .cm-block-math),
+.editor-container :deep(.cm-blockquote .cm-mermaid-wrapper) {
+  color: var(--text-primary);
+  font-style: normal;
+}
+
+/* 列表项间距 */
+.editor-container :deep(.cm-list-mark) {
+  color: var(--text-secondary);
+}
+
+/* 段落间距：通过空行高度控制段落呼吸感 */
+.editor-container :deep(.cm-line:empty) {
+  min-height: 0.4em;
 }
 </style>

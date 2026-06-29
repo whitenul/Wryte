@@ -24,28 +24,23 @@ async function handleSave() {
   <!-- 顶部工具栏 -->
   <header class="toolbar" role="toolbar" aria-label="主工具栏">
     <div class="toolbar-group">
-      <button class="icon-btn" @click="handleOpen" title="打开 (Ctrl+O)"><Icon name="open" /></button>
-      <button class="icon-btn" @click="handleSave" :disabled="!fileStore.dirty" title="保存 (Ctrl+S)"><Icon name="save" /></button>
+      <button class="icon-btn" @click="handleOpen" title="打开 (Ctrl+O)"><Icon name="open" :size="22" /></button>
+      <button class="icon-btn" @click="handleSave" :disabled="!fileStore.dirty" title="保存 (Ctrl+S)"><Icon name="save" :size="22" /></button>
     </div>
     <div class="toolbar-group">
       <button class="icon-btn" :class="{ active: editorStore.mode === 'normal' }" @click="editorStore.toggleMode" :title="editorStore.mode === 'normal' ? '实时预览 (Ctrl+/)' : '源码模式 (Ctrl+/)'">
-        <Icon :name="editorStore.mode === 'normal' ? 'eye' : 'code'" />
+        <Icon :name="editorStore.mode === 'normal' ? 'eye' : 'code'" :size="22" />
       </button>
       <button class="icon-btn" :class="{ active: editorStore.tocExpanded }" @click="editorStore.toggleToc" title="大纲">
-        <Icon name="list" />
+        <Icon name="list" :size="22" />
       </button>
       <button class="icon-btn" :class="{ active: editorStore.showLineNumbers }" @click="editorStore.toggleLineNumbers" title="行号">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="4" width="4" height="16" rx="1" />
-          <line x1="10" y1="8" x2="20" y2="8" />
-          <line x1="10" y1="12" x2="20" y2="12" />
-          <line x1="10" y1="16" x2="20" y2="16" />
-        </svg>
+        <Icon name="list-numbers" :size="22" />
       </button>
     </div>
     <div class="toolbar-group">
       <button class="icon-btn" @click="themeStore.toggle" title="主题 (Ctrl+K)">
-        <Icon :name="themeStore.theme === 'light' ? 'moon' : 'sun'" />
+        <Icon :name="themeStore.theme === 'light' ? 'moon' : 'sun'" :size="22" />
       </button>
     </div>
     <div class="file-name" :class="{ dirty: fileStore.dirty }">
@@ -79,18 +74,12 @@ async function handleSave() {
   border: none;
   border-radius: calc(var(--radius) - 2px);
   color: var(--text-secondary);
-  transition: background 0.18s ease, color 0.18s ease;
-}
-
-.icon-btn :deep(svg) {
-  width: 22px;
-  height: 22px;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .icon-btn:hover:not(:disabled) {
   background: var(--accent-soft);
   color: var(--accent);
-  border: none;
 }
 
 .icon-btn.active {

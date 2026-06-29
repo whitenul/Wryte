@@ -56,7 +56,7 @@ import Icon from './Icon.vue'
   align-items: center;
   gap: 2px;
   padding: 4px 10px;
-  background: var(--bg-primary);
+  background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border-color);
 }
 .fmt-btn {
@@ -72,11 +72,11 @@ import Icon from './Icon.vue'
   color: var(--text-secondary);
   font-size: 13px;
   font-family: "SFMono-Regular", Consolas, monospace;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 .fmt-btn:hover {
   background: var(--accent-soft);
   color: var(--accent);
-  border: none;
 }
 .fmt-btn.code { font-size: 11px; }
 .sep {

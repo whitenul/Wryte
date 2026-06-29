@@ -2,7 +2,6 @@ import { Decoration, WidgetType, EditorView } from '@codemirror/view'
 import type { DecorationSet } from '@codemirror/view'
 import { EditorState, StateField } from '@codemirror/state'
 import { syntaxTree } from '@codemirror/language'
-import { marked } from 'marked'
 import hljs from 'highlight.js/lib/common'
 import katex from 'katex'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
@@ -130,52 +129,245 @@ class TaskMarkWidget extends WidgetType {
   ignoreEvent(): boolean { return false }
 }
 
-// --- 行内内容渲染：marked + KaTeX 公式支持 ---
-function renderInline(text: string): string {
-  const parts: string[] = []
-  const mathRe = /\$([^\s$][^$]*?[^\s$])\$/g
-  let lastIdx = 0
-  let m: RegExpExecArray | null
-  while ((m = mathRe.exec(text)) !== null) {
-    if (m.index > lastIdx) {
-      parts.push(markedParseInlineSafe(text.slice(lastIdx, m.index)))
-    }
-    try {
-      const html = katex.renderToString(m[1], { throwOnError: false, displayMode: false })
-      parts.push(`<span class="cm-cell-math" contenteditable="false" data-tex="${escapeAttr(m[1])}">${html}</span>`)
-    } catch {
-      parts.push(m[0])
-    }
-    lastIdx = m.index + m[0].length
-  }
-  if (lastIdx < text.length) {
-    parts.push(markedParseInlineSafe(text.slice(lastIdx)))
-  }
-  return parts.join('')
-}
+// --- 行内内容渲染：基于 lezer 语法树 ---
+// 遍历 from..to 范围内的语法节点，按节点类型映射到对应 HTML 标签和 cm-* 装饰 class
+// 仅识别 <u>/<mark>/<kbd>/<sup>/<sub>/<s>/<br>/<em>/<strong>/<code> 这些 HTML 内联标签
+// 其它 Markdown 语法（粗体、斜体、上下标、删除线、链接、代码、公式、图片等）一律由 lezer 识别
+const HTML_INLINE_TAG_RE = /<\/?(?:u|mark|kbd|sup|sub|s|del|br|em|strong|code)\s*\/?>/gi
 
-function markedParseInlineSafe(s: string): string {
-  const placeholders: string[] = []
-  const ph = (i: number) => `\x00PH${i}\x00`
-  const protect = (html: string) => {
-    const i = placeholders.length
-    placeholders.push(html)
-    return ph(i)
-  }
-  let t = s
-  t = t.replace(/<\/?(?:u|mark|kbd|sup|sub|s|del|br|em|strong|code)\s*\/?>/gi, (m) => protect(m))
-  t = t.replace(/==([^=\n]+)==/g, (_, content) => protect(`<mark class="cm-highlight">${content}</mark>`))
-  t = t.replace(/\^([^^\s][^^]*?)\^(?!\^)/g, (_, content) => protect(`<sup>${content}</sup>`))
-  t = t.replace(/(?<!~)~([^~\s][^~\n]*?)~(?!~)/g, (_, content) => protect(`<sub>${content}</sub>`))
-  let result = marked.parseInline(t) as string
-  result = result.replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi,
-    (_, url, content) => `<span class="cm-link" data-url="${escapeAttr(url)}">${content}</span>`)
-  result = result.replace(/\x00PH(\d+)\x00/g, (_, i) => placeholders[Number(i)])
-  return result
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// 去除 lezer 节点范围内残留的 Markdown 标记符号
+function stripMdMarkers(name: string, text: string): string {
+  switch (name) {
+    case 'Emphasis': {
+      const m = /^(\*|_)(.*)\1$/.exec(text)
+      return m ? m[2] : text
+    }
+    case 'StrongEmphasis': {
+      const m = /^(\*\*|__)(.*)\1$/.exec(text)
+      return m ? m[2] : text
+    }
+    case 'Strikethrough': {
+      const m = /^~~(.*)~~$/.exec(text)
+      return m ? m[1] : text
+    }
+    case 'Highlight': {
+      const m = /^==(.*)==$/.exec(text)
+      return m ? m[1] : text
+    }
+    case 'Subscript':
+    case 'Superscript': {
+      // lezer 节点覆盖 ~text~ 或 ^text^，去掉首尾 markers
+      const m = /^(\^|~)(.*)\1$/.exec(text)
+      return m ? m[2] : text
+    }
+    case 'InlineCode': {
+      // lezer 节点覆盖 `text`，去掉首尾反引号
+      const m = /^`+([^`].*?)`+$/.exec(text) || /^`([^`]+)`$/.exec(text)
+      return m ? m[1] : text
+    }
+    default:
+      return text
+  }
+}
+
+// 单个节点 → 起始标签 HTML
+function openTagForNode(name: string, attrs: Record<string, string> = {}): string {
+  const a = Object.entries(attrs).map(([k, v]) => ` data-${k}="${escapeAttr(v)}"`).join('')
+  switch (name) {
+    case 'Emphasis': return `<em class="cm-em"${a}>`
+    case 'StrongEmphasis': return `<strong class="cm-strong"${a}>`
+    case 'Strikethrough': return `<del class="cm-strikethrough"${a}>`
+    case 'Highlight': return `<mark class="cm-highlight"${a}>`
+    case 'Subscript': return `<sub class="cm-sub"${a}>`
+    case 'Superscript': return `<sup class="cm-sup"${a}>`
+    case 'InlineCode': return `<code class="cm-code"${a}>`
+    case 'Link': return `<span class="cm-link"${a}>`
+    case 'URL': return `<span class="cm-link"${a}>`
+    case 'Image': return ''  // Image 在父节点中处理
+    default: return ''
+  }
+}
+
+function closeTagForNode(name: string): string {
+  switch (name) {
+    case 'Emphasis': return '</em>'
+    case 'StrongEmphasis': return '</strong>'
+    case 'Strikethrough': return '</del>'
+    case 'Highlight': return '</mark>'
+    case 'Subscript': return '</sub>'
+    case 'Superscript': return '</sup>'
+    case 'InlineCode': return '</code>'
+    case 'Link': return '</span>'
+    case 'URL': return '</span>'
+    default: return ''
+  }
+}
+
+// 收集 from..to 范围所有"需要打开"的节点（按出现顺序），不递归
+function collectInlineNodes(state: EditorState, from: number, to: number): Array<{ name: string; from: number; to: number }> {
+  const result: Array<{ name: string; from: number; to: number }> = []
+  let lastEnd = -1
+  syntaxTree(state).iterate({
+    from, to,
+    enter(node) {
+      if (node.from < from || node.to > to) return
+      if (node.from === lastEnd) return  // 与子节点同起点，跳过父节点
+      if (node.from < from) return
+      const name = node.name
+      if (
+        name === 'Emphasis' || name === 'StrongEmphasis' || name === 'Strikethrough' ||
+        name === 'Highlight' || name === 'Subscript' || name === 'Superscript' ||
+        name === 'InlineCode' || name === 'Link' || name === 'URL' ||
+        name === 'InlineMath' || name === 'Image'
+      ) {
+        result.push({
+          name,
+          from: node.from,
+          to: node.to,
+        })
+        lastEnd = node.to
+        return false  // 不递归子节点，由我们手动控制 InlineMath/Image 渲染
+      }
+    },
+  })
+  return result
+}
+
+// 把 from..to 范围中所有匹配的 HTML 内联标签切成"标签段 + 文本段"
+function sliceHtmlInline(text: string): Array<{ kind: 'tag' | 'text'; value: string }> {
+  const out: Array<{ kind: 'tag' | 'text'; value: string }> = []
+  let last = 0
+  HTML_INLINE_TAG_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = HTML_INLINE_TAG_RE.exec(text)) !== null) {
+    if (m.index > last) out.push({ kind: 'text', value: text.slice(last, m.index) })
+    out.push({ kind: 'tag', value: m[0] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) out.push({ kind: 'text', value: text.slice(last) })
+  return out
+}
+
+// 渲染 InlineMath 节点
+function renderInlineMath(state: EditorState, nodeFrom: number, nodeTo: number): string {
+  const tex = state.doc.sliceString(nodeFrom, nodeTo).replace(/^\$+|\$+$/g, '')
+  try {
+    const html = katex.renderToString(tex, { throwOnError: false, displayMode: false })
+    return `<span class="cm-cell-math" contenteditable="false" data-tex="${escapeAttr(tex)}">${html}</span>`
+  } catch {
+    return escapeHtml(state.doc.sliceString(nodeFrom, nodeTo))
+  }
+}
+
+// 渲染 Image 节点
+function renderImage(state: EditorState, nodeFrom: number, nodeTo: number): string {
+  const raw = state.doc.sliceString(nodeFrom, nodeTo)
+  // ![alt](url)
+  const m = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/.exec(raw)
+  if (!m) return escapeHtml(raw)
+  const alt = m[1]
+  const url = resolveImgSrc(m[2])
+  return `<img class="cm-image" src="${escapeAttr(url)}" alt="${escapeAttr(alt)}" data-block-src="${escapeAttr(m[2])}">`
+}
+
+// 渲染 Link 节点
+function renderLink(state: EditorState, nodeFrom: number, nodeTo: number): string {
+  const text = state.doc.sliceString(nodeFrom, nodeTo)
+  // [text](url) 或 <url>
+  let m = /\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/.exec(text)
+  let url = m?.[2] ?? ''
+  let label = m?.[1] ?? text
+  if (!m) {
+    const u = /^<(https?:\/\/[^>]+)>/.exec(text)
+    if (u) { url = u[1]; label = u[1] }
+  }
+  return `<span class="cm-link" data-url="${escapeAttr(url)}">${escapeHtml(label)}</span>`
+}
+
+// 基于 lezer 语法树渲染 from..to 范围为 HTML
+// 只处理 InlineContent 子树，假定 from..to 在同一行内
+function renderInlineByTree(state: EditorState, from: number, to: number): string {
+  if (from >= to) return ''
+  const text = state.doc.sliceString(from, to)
+  const nodes = collectInlineNodes(state, from, to)
+
+  // 如果没有任何特殊节点，原样转义
+  if (nodes.length === 0) {
+    return renderHtmlInlineText(text)
+  }
+
+  const out: string[] = []
+  let pos = from
+  for (const n of nodes) {
+    if (n.from > pos) {
+      out.push(renderHtmlInlineText(text.slice(pos - from, n.from - from)))
+    }
+    switch (n.name) {
+      case 'InlineMath':
+        out.push(renderInlineMath(state, n.from, n.to))
+        break
+      case 'Image':
+        out.push(renderImage(state, n.from, n.to))
+        break
+      case 'Link':
+      case 'URL':
+        out.push(renderLink(state, n.from, n.to))
+        break
+      default: {
+        // 其它装饰节点：取子文本（不递归子节点），用 cm-* class 包裹
+        const source = text.slice(n.from - from, n.to - from)
+        const inner = stripMdMarkers(n.name, source)
+        out.push(openTagForNode(n.name, { source }))
+        out.push(renderHtmlInlineText(inner))
+        out.push(closeTagForNode(n.name))
+        break
+      }
+    }
+    pos = n.to
+  }
+  if (pos < to) {
+    out.push(renderHtmlInlineText(text.slice(pos - from)))
+  }
+  return out.join('')
+}
+
+// 处理一段原始文本：识别 <u>/<mark>/<kbd>/<sup>/<sub>/<s>/<br>/<em>/<strong>/<code> 等 HTML 内联标签
+function renderHtmlInlineText(text: string): string {
+  const segs = sliceHtmlInline(text)
+  if (segs.length === 0) return ''
+  if (segs.length === 1 && segs[0].kind === 'text') return escapeHtml(text)
+  let out = ''
+  for (const s of segs) {
+    if (s.kind === 'tag') {
+      out += s.value
+    } else {
+      out += escapeHtml(s.value)
+    }
+  }
+  return out
+}
+
+// 收集 Table 节点内所有 TableCell 的 (from, to) 范围，按行优先、列次之的顺序
+function collectTableCells(state: EditorState, tableFrom: number, tableTo: number): Array<{ from: number; to: number }> {
+  const cells: Array<{ from: number; to: number }> = []
+  syntaxTree(state).iterate({
+    from: tableFrom, to: tableTo,
+    enter(node) {
+      if (node.name === 'TableCell') {
+        cells.push({ from: node.from, to: node.to })
+        return false
+      }
+    },
+  })
+  return cells
 }
 
 // --- 表格 widget（单元格可编辑）---
@@ -186,6 +378,7 @@ class TableWidget extends WidgetType {
   constructor(
     private source: string,
     private blockFrom: number,
+    private cells: Array<{ from: number; to: number }> = [],
     private inQuote: boolean = false,
     private calloutType: string | null = null,
   ) { super() }
@@ -204,6 +397,7 @@ class TableWidget extends WidgetType {
     table.dataset.blockFrom = String(this.blockFrom)
     const lines = this.source.split('\n').filter(l => l.trim())
     let rowIdx = 0
+    let cellIdx = 0
     for (const rawLine of lines) {
       // 移除引用内表格每行开头的 > 标记，避免被当作单元格内容显示
       const line = rawLine.replace(/^>\s?/, '')
@@ -215,11 +409,17 @@ class TableWidget extends WidgetType {
         tr.className = 'cm-table-alt'
       }
       rowIdx++
-      const cells = line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|')
-      for (const cell of cells) {
+      const lineCells = line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|')
+      for (let i = 0; i < lineCells.length; i++) {
         const td = document.createElement(tr.className === 'cm-table-header' ? 'th' : 'td')
         td.contentEditable = 'true'
-        td.innerHTML = renderInline(cell.trim())
+        const cellRange = this.cells[cellIdx]
+        if (cellRange && cellRange.from < cellRange.to) {
+          td.innerHTML = renderInlineByTree(view.state, cellRange.from, cellRange.to)
+        } else {
+          td.innerHTML = ''
+        }
+        cellIdx++
         tr.appendChild(td)
       }
       table.appendChild(tr)
@@ -257,18 +457,52 @@ class TableWidget extends WidgetType {
     table.addEventListener('blur', () => {
       this.syncToSource(view, table)
     }, true)
-    // Ctrl/Cmd+点击链接时用系统浏览器打开
+    // Ctrl/Cmd+点击链接时用系统浏览器打开；普通点击数学公式切换为 $...$ 源码编辑
     table.addEventListener('click', (e) => {
-      if (!e.ctrlKey && !e.metaKey) return
       const target = e.target as HTMLElement
-      const link = target.closest('.cm-link') as HTMLElement | null
-      if (!link) return
-      const url = link.dataset.url
-      if (!url) return
-      e.preventDefault()
-      e.stopPropagation()
-      if (url.startsWith('#')) return
-      invoke('open_url', { url })
+      if (e.ctrlKey || e.metaKey) {
+        const link = target.closest('.cm-link') as HTMLElement | null
+        if (!link) return
+        const url = link.dataset.url
+        if (!url) return
+        e.preventDefault()
+        e.stopPropagation()
+        if (url.startsWith('#')) return
+        invoke('open_url', { url })
+        return
+      }
+      // 点击数学公式：切换为 $tex$ 源码可编辑
+      const math = target.closest('.cm-cell-math') as HTMLElement | null
+      if (math && !math.classList.contains('cm-cell-math-editing')) {
+        const tex = math.dataset.tex ?? ''
+        math.classList.add('cm-cell-math-editing')
+        math.contentEditable = 'true'
+        math.textContent = `$${tex}$`
+        // 把光标定位到公式末尾
+        const sel = window.getSelection()
+        const range = document.createRange()
+        range.selectNodeContents(math)
+        range.collapse(false)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      // 点击行内格式（em/strong/...）：切换为源码可编辑
+      const mark = target.closest('.cm-em, .cm-strong, .cm-strikethrough, .cm-highlight, .cm-sub, .cm-sup, .cm-code') as HTMLElement | null
+      if (mark && mark.dataset.source && !mark.classList.contains('cm-cell-mark-editing')) {
+        mark.classList.add('cm-cell-mark-editing')
+        mark.textContent = mark.dataset.source
+        const sel = window.getSelection()
+        const range = document.createRange()
+        range.selectNodeContents(mark)
+        range.collapse(false)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+        e.preventDefault()
+        e.stopPropagation()
+      }
     })
     wrapper.appendChild(table)
     return wrapper
@@ -297,8 +531,20 @@ class TableWidget extends WidgetType {
         // 克隆节点，将 KaTeX math spans 还原为 $tex$ 文本，避免 textContent 丢失公式源码
         const clone = c.cloneNode(true) as HTMLElement
         clone.querySelectorAll('.cm-cell-math').forEach(el => {
-          const tex = el.getAttribute('data-tex') || ''
-          el.replaceWith(document.createTextNode('$' + tex + '$'))
+          // 若 math span 已切换为编辑态（文本是 $...$ 源码），用当前文本
+          const editing = el.classList.contains('cm-cell-math-editing')
+          const raw = editing ? (el.textContent || '') : ('$' + (el.getAttribute('data-tex') || '') + '$')
+          el.replaceWith(document.createTextNode(raw))
+        })
+        // 将行内格式元素（em/strong/...）还原为带 markers 的源码，避免 textContent 丢失 Markdown 标记
+        clone.querySelectorAll('.cm-em, .cm-strong, .cm-strikethrough, .cm-highlight, .cm-sub, .cm-sup, .cm-code').forEach(el => {
+          const src = el.getAttribute('data-source')
+          if (!src) return
+          if (el.classList.contains('cm-cell-mark-editing')) {
+            el.replaceWith(document.createTextNode(el.textContent || ''))
+          } else {
+            el.replaceWith(document.createTextNode(src))
+          }
         })
         return ' ' + (clone.textContent || '').trim() + ' '
       })
@@ -328,15 +574,25 @@ class ImageWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const wrapper = document.createElement('span')
     wrapper.className = 'cm-img-wrapper'
+    let clickTimer: ReturnType<typeof setTimeout> | null = null
     wrapper.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return
       e.preventDefault()
       e.stopPropagation()
       view.focus()
-      view.dispatch({ selection: { anchor: this.from + 1 }, scrollIntoView: true })
+    })
+    wrapper.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      if (clickTimer) clearTimeout(clickTimer)
+      clickTimer = setTimeout(() => {
+        view.dispatch({ selection: { anchor: this.from }, scrollIntoView: true })
+      }, 200)
     })
     wrapper.addEventListener('dblclick', (e) => {
       e.preventDefault()
       e.stopPropagation()
+      if (clickTimer) { clearTimeout(clickTimer); clickTimer = null }
       openLightbox(this.src)
     })
     const img = document.createElement('img')
@@ -412,10 +668,26 @@ class CodeBlockWidget extends WidgetType {
     const code = document.createElement('code')
     const m = /^\s*(?:>\s?)?```[^\S\n]*(\S*)/m.exec(this.source)
     const lang = m?.[1] || ''
-    // 移除每行开头的引用前缀 > ，再提取围栏内容
-    const stripped = this.source.split('\n').map(l => l.replace(/^\s*(?:>\s?)?/, '')).join('\n')
+    // 移除每行开头的引用前缀 > ，保留代码缩进
+    const stripped = this.source.split('\n').map(l => l.replace(/^\s*>[\s>]*/, m => {
+      // 计算引用前缀占用的视觉列数（> 占1列，后续空格每级1列）
+      const len = m.length
+      const indent = ' '.repeat(len)
+      return indent
+    })).join('\n')
     const rawBody = stripped.replace(/^```[^\n]*\n?/, '').replace(/\n?```\s*$/, '')
-    const body = rawBody
+    // CommonMark dedent：去除所有非空行的公共最小缩进
+    const lines = rawBody.split('\n')
+    let minIndent = Infinity
+    for (const line of lines) {
+      if (line.trim().length === 0) continue
+      const indent = line.match(/^(\s*)/)![1].length
+      if (indent < minIndent) minIndent = indent
+    }
+    if (!isFinite(minIndent)) minIndent = 0
+    const body = minIndent > 0
+      ? lines.map(l => l.startsWith(' '.repeat(minIndent)) || l.startsWith('\t'.repeat(minIndent)) ? l.slice(minIndent) : l.replace(new RegExp(`^[ \\t]{0,${minIndent}}`), '')).join('\n')
+      : rawBody
     if (lang && hljs.getLanguage(lang)) {
       code.className = `language-${lang}`
       code.textContent = body
@@ -456,7 +728,7 @@ class MermaidWidget extends WidgetType {
       view.dispatch({ selection: { anchor: this.blockFrom + 1 }, scrollIntoView: true })
     })
     wrapper.textContent = '渲染中…'
-    const stripped = this.source.split('\n').map(l => l.replace(/^\s*(?:>\s?)?/, '')).join('\n')
+    const stripped = this.source.split('\n').map(l => l.replace(/^\s*>[\s>]*/, m => ' '.repeat(m.length))).join('\n')
     const body = stripped.replace(/^```mermaid[^\n]*\n?/, '').replace(/\n?```\s*$/, '')
     const isDark = document.documentElement.dataset.theme === 'dark'
     import('mermaid').then(async ({ default: mermaid }) => {
@@ -758,8 +1030,11 @@ function buildDecorations(state: EditorState): DecorationSet {
               if (calloutType) {
                 const visibleIdx = cursorInside ? lineIdx : lineIdx - 1
                 const visibleTotal = cursorInside ? totalLines : totalLines - 1
-                if (visibleIdx === 0) lineClass += ' cm-callout-first'
-                if (visibleIdx === visibleTotal - 1) lineClass += ' cm-callout-last'
+                if (visibleIdx === 0) lineClass += ' cm-callout-first cm-blockquote-first'
+                if (visibleIdx === visibleTotal - 1) lineClass += ' cm-callout-last cm-blockquote-last'
+              } else {
+                if (lineIdx === 0) lineClass += ' cm-blockquote-first'
+                if (lineIdx === totalLines - 1) lineClass += ' cm-blockquote-last'
               }
               entries.push({ from: line.from, to: line.from, deco: Decoration.line({ class: lineClass }) })
             }
@@ -787,7 +1062,9 @@ function buildDecorations(state: EditorState): DecorationSet {
           // 表格始终用 widget 渲染，单元格可编辑，blur 时同步源码
           const src = state.doc.sliceString(startLine, endLine)
           const qi = getQuoteInfo(startLine)
-          entries.push({ from: startLine, to: endLine, deco: Decoration.replace({ widget: new TableWidget(src, startLine, qi.inQuote, qi.calloutType), block: true }) })
+          // 从 lezer 语法树收集所有单元格的 from/to 范围（按行优先、列次之）
+          const cells = collectTableCells(state, startLine, endLine)
+          entries.push({ from: startLine, to: endLine, deco: Decoration.replace({ widget: new TableWidget(src, startLine, cells, qi.inQuote, qi.calloutType), block: true }) })
           blockRanges.push({ from: startLine, to: endLine })
           return false
         }
@@ -813,6 +1090,8 @@ function buildDecorations(state: EditorState): DecorationSet {
           break
         }
         case 'Image': {
+          // 光标在图片内时不渲染 widget，显示源码可编辑
+          if (head >= node.from && head <= node.to) break
           const src = state.doc.sliceString(node.from, node.to)
           const im = /^!\[([^\]]*)\]\(\s*((?:[^()"']+|"[^"]*"|'[^']*'|\((?:[^()]|\([^()]*\))*\))+)\s*\)$/.exec(src)
           if (im) {
@@ -983,6 +1262,8 @@ function buildDecorations(state: EditorState): DecorationSet {
     while ((match = imgRegex.exec(text)) !== null) {
       const from = line.from + match.index
       const to = from + match[0].length
+      // 光标在图片内时不渲染 widget，显示源码可编辑
+      if (head >= from && head <= to) continue
       const alreadyProcessed = entries.some(e => e.from === from && e.to === to)
       if (!alreadyProcessed) {
         const inner = match[2].trim()

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 内联 SVG 图标组件，name 指定图标，size 控制像素尺寸 */
-type IconName = 'menu' | 'open' | 'save' | 'read' | 'edit' | 'sun' | 'moon' | 'link' | 'eye' | 'code' | 'list'
+type IconName = 'menu' | 'open' | 'save' | 'read' | 'edit' | 'sun' | 'moon' | 'link' | 'eye' | 'code' | 'list' | 'list-numbers' | 'chevron-right' | 'chevron-down'
 const props = defineProps<{ name: IconName; size?: number }>()
 const s = props.size ?? 18
 </script>
@@ -40,6 +40,15 @@ const s = props.size ?? 18
     </template>
     <template v-else-if="name === 'list'">
       <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+    </template>
+    <template v-else-if="name === 'list-numbers'">
+      <rect x="3" y="4" width="4" height="16" rx="1" /><line x1="10" y1="8" x2="20" y2="8" /><line x1="10" y1="12" x2="20" y2="12" /><line x1="10" y1="16" x2="20" y2="16" />
+    </template>
+    <template v-else-if="name === 'chevron-right'">
+      <polyline points="9 6 15 12 9 18" />
+    </template>
+    <template v-else-if="name === 'chevron-down'">
+      <polyline points="6 9 12 15 18 9" />
     </template>
   </svg>
 </template>

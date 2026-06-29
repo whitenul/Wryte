@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useEditorStore } from '../stores/editor'
+import Icon from './Icon.vue'
 import type { TocItem } from '../types'
 
 const editorStore = useEditorStore()
@@ -42,34 +43,36 @@ function jump(item: TocItem) {
 
 <template>
   <!-- 大纲侧边栏 -->
-  <aside class="toc-sidebar" v-if="editorStore.tocExpanded && editorStore.toc.length" aria-label="大纲导航">
-    <div class="toc-header">大纲</div>
-    <nav class="toc-list">
-      <div
-        v-for="entry in visibleToc"
-        :key="entry.item.id"
-        class="toc-item"
-        :class="['toc-level-' + entry.item.level, { active: entry.item.id === editorStore.activeTocId }]"
-      >
-        <button
-          v-if="entry.hasChildren"
-          class="toc-toggle"
-          :aria-label="entry.collapsed ? '展开' : '折叠'"
-          :aria-expanded="!entry.collapsed"
-          @click.stop="editorStore.toggleTocCollapse(entry.item.id)"
+  <Transition name="toc-slide">
+    <aside class="toc-sidebar" v-if="editorStore.tocExpanded && editorStore.toc.length" aria-label="大纲导航">
+      <div class="toc-header">大纲</div>
+      <nav class="toc-list">
+        <div
+          v-for="entry in visibleToc"
+          :key="entry.item.id"
+          class="toc-item"
+          :class="['toc-level-' + entry.item.level, { active: entry.item.id === editorStore.activeTocId }]"
         >
-          {{ entry.collapsed ? '▶' : '▼' }}
-        </button>
-        <a
-          class="toc-link"
-          :title="entry.item.text"
-          @click="jump(entry.item)"
-        >
-          {{ entry.item.text }}
-        </a>
-      </div>
-    </nav>
-  </aside>
+          <button
+            v-if="entry.hasChildren"
+            class="toc-toggle"
+            :aria-label="entry.collapsed ? '展开' : '折叠'"
+            :aria-expanded="!entry.collapsed"
+            @click.stop="editorStore.toggleTocCollapse(entry.item.id)"
+          >
+            <Icon :name="entry.collapsed ? 'chevron-right' : 'chevron-down'" :size="14" />
+          </button>
+          <a
+            class="toc-link"
+            :title="entry.item.text"
+            @click="jump(entry.item)"
+          >
+            {{ entry.item.text }}
+          </a>
+        </div>
+      </nav>
+    </aside>
+  </Transition>
 </template>
 
 <style scoped>
@@ -102,7 +105,7 @@ function jump(item: TocItem) {
   align-items: center;
   margin: 0 4px;
   border-radius: calc(var(--radius) - 4px);
-  transition: background 0.1s, color 0.1s;
+  transition: background var(--transition-fast), color var(--transition-fast);
 }
 
 .toc-item:hover {
@@ -111,19 +114,18 @@ function jump(item: TocItem) {
 
 .toc-item.active {
   background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .toc-toggle {
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   margin-left: 4px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 8px;
-  line-height: 1;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -133,7 +135,6 @@ function jump(item: TocItem) {
 .toc-toggle:hover {
   background: transparent;
   color: var(--accent);
-  border: none;
 }
 
 .toc-link {
@@ -159,4 +160,14 @@ function jump(item: TocItem) {
 .toc-level-4 .toc-link { padding-left: 52px; }
 .toc-level-5 .toc-link { padding-left: 68px; }
 .toc-level-6 .toc-link { padding-left: 84px; }
+
+.toc-slide-enter-active,
+.toc-slide-leave-active {
+  transition: transform var(--transition-normal), opacity var(--transition-normal);
+}
+.toc-slide-enter-from,
+.toc-slide-leave-to {
+  transform: translateX(-100%);
+  opacity: 0;
+}
 </style>
